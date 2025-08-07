@@ -2,6 +2,15 @@
 name = "camunda_connector_rs"
 version = "0.1.0"
 edition = "2024"
+authors = ["mathias.vandaele@camunda.com"]
+description = "A procedural macro for generating Camunda connectors with Axum routers"
+license = "MIT"
+repository = "https://github.com/mathias-vandaele/camunda_connector_rs"
+homepage = "https://github.com/mathias-vandaele/camunda_connector_rs"
+documentation = "https://docs.rs/camunda-connector-rs"
+readme = "README.md"
+keywords = ["camunda", "connector", "proc-macro", "axum", "bpm"]
+categories = ["development-tools::procedural-macro-helpers", "web-programming"]
 
 
 [lib]
@@ -10,3 +19,5 @@ proc-macro = true
 [dependencies]
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
+
+
