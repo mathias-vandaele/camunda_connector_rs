@@ -16,9 +16,11 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-camunda-connector-rs = "0.1.0"
-serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.0", features = ["full"] }
+camunda_connector_rs = "0.2.0"
+axum = "0.8.4"
+inventory = "0.3.20"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = {  version = "1.47.1" , features = ["full"]}
 ```
 
 ## Quick Start
