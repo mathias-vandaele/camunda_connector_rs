@@ -7,19 +7,24 @@ use syn::{
 };
 
 struct ConnectorArgs {
-    path: String,
+    name: String,
+    operation: String,
 }
 // Abridged Parse impl for brevity
 impl Parse for ConnectorArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut path = None;
+        let mut operation = None;
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            if key == "path" {
+            if key == "name" {
                 let value: syn::LitStr = input.parse()?;
                 path = Some(value.value());
-            } else {
+            } else if key == "operation" {
+                let value: syn::LitStr = input.parse()?;
+                operation = Some(value.value());
+            }else {
                 return Err(Error::new_spanned(key, "Unknown attribute key"));
             }
             if input.peek(Token![,]) {
@@ -27,31 +32,42 @@ impl Parse for ConnectorArgs {
             }
         }
         Ok(ConnectorArgs {
-            path: path.ok_or_else(|| syn::Error::new(input.span(), "Missing 'path' parameter"))?,
+            name: path.ok_or_else(|| syn::Error::new(input.span(), "Missing 'path' parameter"))?,
+            operation: operation.ok_or_else(|| syn::Error::new(input.span(), "Missing 'operation' parameter"))?,
         })
     }
 }
 
 
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
 #[proc_macro_attribute]
 pub fn camunda_connector(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(_attr as ConnectorArgs);
-    let path = args.path.as_str();
-    let full_path = format!("/csp/{}", path);
+    let name = args.name.as_str();
+    let operation = args.operation.as_str();
+    let full_path = format!("/csp/{}/{}", name, operation);
+    let connector_request_struct = format_ident!("ConnectorRequest{}{}", capitalize_first(name), capitalize_first(&operation));
     let input_fn = parse_macro_input!(item as ItemFn);
     let fn_name = &input_fn.sig.ident;
 
     let builder_fn_name = format_ident!("_create_{}_router_builder", fn_name);
 
-    if input_fn.sig.inputs.len() != 3 {
-        return Error::new_spanned(&input_fn.sig.inputs, "Expected exactly 3 parameters: id: Option<u64>, method: String, params: T").to_compile_error().into();
+    if input_fn.sig.inputs.len() != 2 {
+        return Error::new_spanned(&input_fn.sig.inputs, "Expected exactly 2 parameters: id: Option<u64>, params: T").to_compile_error().into();
     }
     if input_fn.sig.asyncness.is_none() {
         return Error::new_spanned(&input_fn.sig.fn_token, "Function must be async").to_compile_error().into();
     }
 
     // Get the type of the third parameter, which holds the business data.
-    let params_arg = input_fn.sig.inputs.iter().nth(2).unwrap();
+    let params_arg = input_fn.sig.inputs.iter().nth(1).unwrap();
     let input_ty = if let FnArg::Typed(pt) = params_arg {
         &pt.ty
     } else {
@@ -60,32 +76,28 @@ pub fn camunda_connector(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let generated_code = quote! {
 
-        use axum::response::IntoResponse;
-
         #[derive(Debug, serde::Deserialize)]
-        pub struct ConnectorRequest {
+        pub struct #connector_request_struct {
             pub id: u64,
-            pub method: String,
             pub params: #input_ty,
         }
 
         #input_fn
 
         fn #builder_fn_name() -> axum::Router {
-            async fn handler(axum::Json(payload): axum::Json<ConnectorRequest>) -> impl axum::response::IntoResponse {
-                match #fn_name(payload.id, payload.method, payload.params).await {
-                    Ok(data) => axum::Json(data).into_response(),
-                    Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)).into_response(),
+            async fn handler(axum::Json(payload): axum::Json<#connector_request_struct>) -> impl axum::response::IntoResponse {
+                match #fn_name(payload.id, payload.params).await {
+                    Ok(data) => axum::response::IntoResponse::into_response(axum::Json(data)),
+                    Err(e) => axum::response::IntoResponse::into_response((axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))),
                 }
             }
             axum::Router::new().route(#full_path, axum::routing::post(handler))
         }
 
-        // 3. Use `inventory::submit!` to create a recipe and register it in the global collection.
-        // This code runs when the program starts up.
         ::inventory::submit! {
             crate::connectors::ConnectorRecipe {
-                name : #path,
+                name : #name,
+                operation : #operation,
                 create_router: #builder_fn_name,
             }
         }
@@ -123,6 +135,7 @@ pub fn connector_main(attr: TokenStream) -> TokenStream {
             use axum::Router;
             pub struct ConnectorRecipe {
                 pub name: &'static str,
+                pub operation: &'static str,
                 pub create_router: fn() -> Router,
             }
 
@@ -135,7 +148,7 @@ pub fn connector_main(attr: TokenStream) -> TokenStream {
 
             // The loop iterates over the inventory populated by the `#[connector]` macros
             for recipe in ::inventory::iter::<crate::connectors::ConnectorRecipe> {
-                println!("Merging router for recipe: {}", recipe.name);
+                println!("Merging router for recipe: name => {} | operation => {}", recipe.name, recipe.operation);
                 app = app.merge((recipe.create_router)());
             }
 
