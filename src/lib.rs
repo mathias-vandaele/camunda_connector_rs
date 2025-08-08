@@ -48,63 +48,78 @@ fn capitalize_first(s: &str) -> String {
 }
 
 #[proc_macro_attribute]
-pub fn camunda_connector(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(_attr as ConnectorArgs);
-    let name = args.name.as_str();
-    let operation = args.operation.as_str();
-    let full_path = format!("/csp/{}/{}", name, operation);
-    let connector_request_struct = format_ident!("ConnectorRequest{}{}", capitalize_first(name), capitalize_first(&operation));
+pub fn camunda_connector(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as ConnectorArgs);
+    let name = args.name;
+    let operation = args.operation;
+
     let input_fn = parse_macro_input!(item as ItemFn);
     let fn_name = &input_fn.sig.ident;
 
-    let builder_fn_name = format_ident!("_create_{}_router_builder", fn_name);
-
     if input_fn.sig.inputs.len() != 2 {
-        return Error::new_spanned(&input_fn.sig.inputs, "Expected exactly 2 parameters: id: Option<u64>, params: T").to_compile_error().into();
+        return Error::new_spanned(&input_fn.sig.inputs, "Expected exactly 2 parameters: (id: u64, params: T)")
+            .to_compile_error().into();
     }
     if input_fn.sig.asyncness.is_none() {
-        return Error::new_spanned(&input_fn.sig.fn_token, "Function must be async").to_compile_error().into();
+        return Error::new_spanned(&input_fn.sig.fn_token, "Function must be async")
+            .to_compile_error().into();
     }
-
-    // Get the type of the third parameter, which holds the business data.
     let params_arg = input_fn.sig.inputs.iter().nth(1).unwrap();
     let input_ty = if let FnArg::Typed(pt) = params_arg {
         &pt.ty
     } else {
-        panic!("Expected typed arg");
+        return Error::new_spanned(params_arg, "Expected typed second param").to_compile_error().into();
     };
 
-    let generated_code = quote! {
+    let params_struct = format_ident!("Params{}{}", capitalize_first(&name), capitalize_first(&operation));
+    let request_struct = format_ident!("Request{}{}", capitalize_first(&name), capitalize_first(&operation));
+    let exec_fn = format_ident!("exec_raw_{}_{}", &name, &operation);
+
+    let out = quote! {
+        #[derive(Debug, serde::Deserialize)]
+        pub struct #params_struct {
+            pub operation: String,
+            pub input: #input_ty,
+        }
 
         #[derive(Debug, serde::Deserialize)]
-        pub struct #connector_request_struct {
+        pub struct #request_struct {
             pub id: u64,
-            pub params: #input_ty,
+            pub params: #params_struct,
         }
 
         #input_fn
 
-        fn #builder_fn_name() -> axum::Router {
-            async fn handler(axum::Json(payload): axum::Json<#connector_request_struct>) -> impl axum::response::IntoResponse {
-                match #fn_name(payload.id, payload.params).await {
-                    Ok(data) => axum::response::IntoResponse::into_response(axum::Json(data)),
-                    Err(e) => axum::response::IntoResponse::into_response((axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))),
+        fn #exec_fn(bytes: axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>> {
+            Box::pin(async move {
+                // Full, typed deserialization for THIS connector/op
+                let req: #request_struct = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("Bad JSON for `{}`/`{}`: {}", #name, #operation, e))?;
+
+                // (Optional) sanity check — not strictly needed since dispatcher already matched
+                if req.params.operation != #operation {
+                    return Err(format!("Operation mismatch: expected `{}`, got `{}`", #operation, req.params.operation));
                 }
-            }
-            axum::Router::new().route(#full_path, axum::routing::post(handler))
+
+                // Call user's handler
+                match #fn_name(req.id, req.params.input).await {
+                    Ok(out) => serde_json::to_value(out).map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            })
         }
 
         ::inventory::submit! {
             crate::connectors::ConnectorRecipe {
-                name : #name,
-                operation : #operation,
-                create_router: #builder_fn_name,
+                name: #name,
+                operation: #operation,
+                exec_raw: #exec_fn,
             }
         }
     };
-
-    generated_code.into()
+    out.into()
 }
+
 
 
 struct MainArgs {
@@ -129,34 +144,63 @@ pub fn connector_main(attr: TokenStream) -> TokenStream {
     let port = &args.port;
 
     quote! {
-        use axum::Router;
-        // This macro expands to the full main function
         mod connectors {
-            use axum::Router;
+
             pub struct ConnectorRecipe {
                 pub name: &'static str,
                 pub operation: &'static str,
-                pub create_router: fn() -> Router,
+                pub exec_raw: fn(axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>,
             }
 
             ::inventory::collect!(ConnectorRecipe);
         }
 
+        #[derive(Deserialize)]
+        struct OpPeek {
+            params: OpPeekParams,
+        }
+        #[derive(Deserialize)]
+        struct OpPeekParams {
+            operation: String,
+        }
+
+        fn build_table() -> std::collections::HashMap<(String, String), fn(axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>> {
+            let mut table = std::collections::HashMap::new();
+            for r in ::inventory::iter::<crate::connectors::ConnectorRecipe> {
+                table.insert((r.name.to_string(), r.operation.to_string()), r.exec_raw);
+            }
+            table
+        }
+
+        async fn dispatch(
+            axum::extract::Path(name): axum::extract::Path<String>,
+            body: axum::body::Bytes,
+            ) -> Result<axum::Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+            // 1) Peek op
+            let peek: OpPeek = serde_json::from_slice(&body)
+                .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid JSON envelope".to_string()))?;
+
+            static ONCE: std::sync::OnceLock<std::collections::HashMap<(String, String), fn(axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>>> =
+                std::sync::OnceLock::new();
+            let table = ONCE.get_or_init(build_table);
+
+            let key = (name, peek.params.operation.clone());
+            let exec = table
+                .get(&key)
+                .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, format!("Unsupported operation `{}`", peek.params.operation)))?;
+
+            match exec(body).await {
+                Ok(val) => Ok(axum::Json(val)),
+                Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)),
+            }
+        }
+
         #[tokio::main]
         async fn main() {
-            let mut app = axum::Router::new();
-
-            // The loop iterates over the inventory populated by the `#[connector]` macros
-            for recipe in ::inventory::iter::<crate::connectors::ConnectorRecipe> {
-                println!("Merging router for recipe: name => {} | operation => {}", recipe.name, recipe.operation);
-                app = app.merge((recipe.create_router)());
-            }
-
-            let addr = ::std::net::SocketAddr::from(([0, 0, 0, 0], #port));
-            println!("🚀 Connector server listening on {}", addr);
-
-            // Updated for axum 0.7+: Use axum::serve with a Tokio TCP listener.
+            let app = axum::Router::new().route("/csp/{name}", axum::routing::post(dispatch));
+            let addr = ::std::net::SocketAddr::from(([0,0,0,0], #port));
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            println!("🚀 Listening on {addr}");
             axum::serve(listener, app.into_make_service()).await.unwrap();
         }
     }.into()
