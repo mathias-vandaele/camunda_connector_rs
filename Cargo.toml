@@ -1,6 +1,6 @@
 [package]
 name = "camunda_connector_rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["mathias.vandaele@camunda.com"]
 description = "A procedural macro for generating Camunda connectors with Axum routers"
