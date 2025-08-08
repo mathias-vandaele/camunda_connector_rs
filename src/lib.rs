@@ -90,7 +90,7 @@ pub fn camunda_connector(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #input_fn
 
-        fn #exec_fn(bytes: axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>> {
+        fn #exec_fn(bytes: axum::body::Bytes) -> crate::connectors::DispatcherFuture {
             Box::pin(async move {
                 // Full, typed deserialization for THIS connector/op
                 let req: #request_struct = serde_json::from_slice(&bytes)
@@ -146,10 +146,12 @@ pub fn connector_main(attr: TokenStream) -> TokenStream {
     quote! {
         mod connectors {
 
+            pub type DispatcherFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>;
+
             pub struct ConnectorRecipe {
                 pub name: &'static str,
                 pub operation: &'static str,
-                pub exec_raw: fn(axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>,
+                pub exec_raw: fn(axum::body::Bytes) -> DispatcherFuture,
             }
 
             ::inventory::collect!(ConnectorRecipe);
@@ -164,7 +166,7 @@ pub fn connector_main(attr: TokenStream) -> TokenStream {
             operation: String,
         }
 
-        fn build_table() -> std::collections::HashMap<(String, String), fn(axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>> {
+        fn build_table() -> std::collections::HashMap<(String, String), fn(axum::body::Bytes) -> connectors::DispatcherFuture > {
             let mut table = std::collections::HashMap::new();
             for r in ::inventory::iter::<crate::connectors::ConnectorRecipe> {
                 table.insert((r.name.to_string(), r.operation.to_string()), r.exec_raw);
@@ -180,14 +182,14 @@ pub fn connector_main(attr: TokenStream) -> TokenStream {
             let peek: OpPeek = serde_json::from_slice(&body)
                 .map_err(|_| (axum::http::StatusCode::BAD_REQUEST, "Invalid JSON envelope".to_string()))?;
 
-            static ONCE: std::sync::OnceLock<std::collections::HashMap<(String, String), fn(axum::body::Bytes) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static>>>> =
+            static ONCE: std::sync::OnceLock<std::collections::HashMap<(String, String), fn(axum::body::Bytes) -> connectors::DispatcherFuture >> =
                 std::sync::OnceLock::new();
             let table = ONCE.get_or_init(build_table);
 
             let key = (name, peek.params.operation.clone());
             let exec = table
                 .get(&key)
-                .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, format!("Unsupported operation `{}`", peek.params.operation)))?;
+                .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, format!("Unsupported connector/operation `{}`", peek.params.operation)))?;
 
             match exec(body).await {
                 Ok(val) => Ok(axum::Json(val)),

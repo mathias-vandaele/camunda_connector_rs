@@ -1,31 +1,30 @@
 # Camunda Connector Rust
 
-A Rust procedural macro library for easily creating HTTP endpoints that integrate with Camunda BPM. This library allows you to define connector functions with simple attributes and automatically generates the necessary HTTP server infrastructure.
+A Rust procedural macro library for building Camunda connectors with automatic request dispatching and type-safe handlers.
 
 ## Features
 
-- 🚀 **Simple API**: Define connector functions with just a few attributes
-- 🔄 **Auto-generated endpoints**: Automatically creates REST endpoints for your connectors
-- 📦 **Type-safe**: Leverages Rust's type system for request/response handling
-- ⚡ **Async support**: Built on top of `tokio` and `axum` for high performance
-- 🛠️ **Easy integration**: Minimal boilerplate code required
+- **Declarative Connector Definition**: Use attributes to define connectors with minimal boilerplate
+- **Automatic Request Dispatching**: Built-in HTTP server with routing based on connector name and operation
+- **Type Safety**: Fully typed request/response handling with automatic serialization/deserialization
+- **Async Support**: Built on Tokio and Axum for high-performance async operations
+- **Inventory Integration**: Automatic registration of connectors at compile time
 
-## Installation
+## Quick Start
 
-Add this to your `Cargo.toml`:
+Add the following dependencies to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-camunda_connector_rs = "0.2.0"
+camunda_connector_rs = "0.0.3"
 axum = "0.8.4"
 inventory = "0.3.20"
 serde = { version = "1.0.219", features = ["derive"] }
 tokio = {  version = "1.47.1" , features = ["full"]}
+serde_json = "1.0.142"
 ```
 
-## Quick Start
-
-Here's a complete example showing how to create math operation connectors:
+### Basic Example
 
 ```rust
 use camunda_connector_rs::{camunda_connector, connector_main};
@@ -34,161 +33,161 @@ use serde::{Deserialize, Serialize};
 // Start the server on port 8080
 connector_main!(port = 8080);
 
+// Define your input/output types
 #[derive(Deserialize, Debug)]
-pub struct MyInput {
+pub struct MathInput {
     pub a: u64,
     pub b: u64,
 }
 
 #[derive(Serialize, Debug)]
-pub struct MyOutput {
+pub struct MathOutput {
     pub result: u64,
 }
 
+// Define connector handlers
 #[camunda_connector(name = "math", operation = "add")]
-pub async fn add(id: u64, params: MyInput) -> Result<MyOutput, String> {
+pub async fn add(id: u64, params: MathInput) -> Result<MathOutput, String> {
     println!("[add] id: {}, params: {:?}", id, params);
-    Ok(MyOutput {
-        result: params.a + params.b
+    Ok(MathOutput {
+        result: params.a + params.b,
     })
 }
 
-#[camunda_connector(name = "math", operation = "sub")]
-pub async fn sub(id: u64, params: MyInput) -> Result<MyOutput, String> {
-    println!("[sub] id: {}, params: {:?}", id, params);
-    Ok(MyOutput {
-        result: params.a - params.b
+#[camunda_connector(name = "math", operation = "subtract")]
+pub async fn subtract(id: u64, params: MathInput) -> Result<MathOutput, String> {
+    println!("[subtract] id: {}, params: {:?}", id, params);
+    Ok(MathOutput {
+        result: params.a - params.b,
     })
 }
 ```
 
-## API Reference
+## Usage
 
-### `#[camunda_connector]` Attribute
+### Defining Connectors
 
-The main attribute macro for defining connector endpoints.
+Use the `#[camunda_connector]` attribute to define connector handlers:
 
-**Parameters:**
-- `name`: The connector name (used in the URL path)
-- `operation`: The operation name (used in the URL path)
+```rust
+#[camunda_connector(name = "connector_name", operation = "operation_name")]
+pub async fn handler_function(id: u64, params: InputType) -> Result<OutputType, String> {
+    // Your connector logic here
+}
+```
 
-**Function Requirements:**
-- Must be `async`
-- Must have exactly 2 parameters:
-    1. `id: u64` - The connector execution ID
-    2. `params: T` - Your custom input type (must implement `Deserialize`)
-- Must return `Result<O, E>` where:
-    - `O` implements `Serialize` (success response)
-    - `E` implements `Display` (error response)
+**Requirements:**
+- Functions must be `async`
+- Must take exactly 2 parameters: `id: u64` and `params: T` where `T` implements `Deserialize`
+- Must return `Result<T, String>` where `T` implements `Serialize`
 
-**Generated Endpoint:**
-Each connector generates an endpoint at `/csp/{name}/{operation}` that accepts POST requests.
+### Starting the Server
 
-### `connector_main!` Macro
+Use the `connector_main!` macro to generate the main function and start the HTTP server:
 
-Generates the main function and HTTP server setup.
+```rust
+connector_main!(port = 8080);
+```
 
-**Parameters:**
-- `port`: The port number to run the server on
-
-## How It Works
-
-1. **Connector Registration**: Each `#[camunda_connector]` function is automatically registered using the `inventory` crate
-2. **Router Generation**: The macro generates an Axum router for each connector endpoint
-3. **Request Handling**: Incoming JSON requests are automatically deserialized to your input type
-4. **Response Handling**: Function results are serialized to JSON responses
-5. **Error Handling**: Errors are automatically converted to HTTP 500 responses
-
-## Generated Code Structure
-
-For each connector function, the macro generates:
-
-- A request struct named `ConnectorRequest{Name}{Operation}`
-- An HTTP handler function
-- A router builder function
-- Registration with the global connector inventory
-
-## Example Endpoints
-
-Based on the example above, the following endpoints would be created:
-
-- `POST /csp/math/add` - Addition operation
-- `POST /csp/math/sub` - Subtraction operation
+This generates:
+- A complete `main()` function with Tokio runtime
+- HTTP server using Axum
+- Request routing and dispatching logic
+- Error handling and JSON response formatting
 
 ### Request Format
 
+Connectors expect HTTP POST requests to `/csp/{connector_name}` with JSON payload:
+
 ```json
 {
-  "id": 12345,
-  "params": {
-    "a": 10,
-    "b": 5
-  }
+    "id": 12345,
+    "params": {
+        "operation": "operation_name",
+        "input": {
+            // Your connector-specific input data
+        }
+    }
 }
 ```
 
 ### Response Format
 
-**Success (200 OK):**
-```json
-{
-  "result": 15
-}
-```
+Successful responses return JSON with your connector's output data. Error responses return appropriate HTTP status codes with error messages.
 
-**Error (500 Internal Server Error):**
-```
-Error message string
-```
+## How It Works
+
+### Code Generation
+
+The `#[camunda_connector]` attribute generates:
+
+1. **Request/Response Structs**: Automatically creates typed structs for deserialization
+   ```rust
+   // Generated for each connector
+   pub struct ParamsMathAdd { /* ... */ }
+   pub struct RequestMathAdd { /* ... */ }
+   ```
+
+2. **Dispatcher Function**: Creates a type-safe dispatcher that handles JSON parsing and calls your handler
+   ```rust
+   fn exec_raw_math_add(bytes: axum::body::Bytes) -> DispatcherFuture { /* ... */ }
+   ```
+
+3. **Registration**: Uses the `inventory` crate to register connectors at compile time
+
+### Request Flow
+
+1. HTTP request arrives at `/csp/{connector_name}`
+2. Server peeks at the `operation` field to determine routing
+3. Finds the appropriate handler function using a lookup table
+4. Deserializes the full request with proper typing
+5. Calls your handler function
+6. Serializes and returns the response
 
 ## Error Handling
 
-The library automatically handles:
-- JSON deserialization errors
-- Function execution errors (converted to HTTP 500)
-- Type validation errors
+The framework provides comprehensive error handling:
 
-Your connector functions should return `Result<T, E>` where `E` implements `Display` for proper error messages.
+- **JSON Parsing Errors**: Returns 400 Bad Request for malformed JSON
+- **Unknown Connectors**: Returns 400 Bad Request for unregistered connector/operation combinations
+- **Handler Errors**: Returns 500 Internal Server Error for errors returned by your handler functions
 
-## Advanced Usage
+## Advanced Features
+
+### Multiple Operations per Connector
+
+You can define multiple operations for the same connector:
+
+```rust
+#[camunda_connector(name = "calculator", operation = "add")]
+pub async fn add(id: u64, params: MathInput) -> Result<MathOutput, String> { /* ... */ }
+
+#[camunda_connector(name = "calculator", operation = "multiply")]
+pub async fn multiply(id: u64, params: MathInput) -> Result<MathOutput, String> { /* ... */ }
+```
 
 ### Custom Input/Output Types
 
-You can use any types that implement the required traits:
+Each connector operation can have its own input and output types:
 
 ```rust
 #[derive(Deserialize)]
-pub struct DatabaseQuery {
-    pub table: String,
-    pub conditions: Vec<String>,
+pub struct StringInput {
+    pub text: String,
 }
 
 #[derive(Serialize)]
-pub struct DatabaseResult {
-    pub rows: Vec<serde_json::Value>,
-    pub count: usize,
+pub struct StringOutput {
+    pub length: usize,
+    pub uppercase: String,
 }
 
-#[camunda_connector(name = "database", operation = "query")]
-pub async fn query_database(id: u64, params: DatabaseQuery) -> Result<DatabaseResult, String> {
-    // Your database logic here
-    todo!()
-}
-```
-
-### Multiple Connectors
-
-You can define as many connectors as needed in the same application:
-
-```rust
-#[camunda_connector(name = "email", operation = "send")]
-pub async fn send_email(id: u64, params: EmailParams) -> Result<EmailResult, String> {
-    // Email sending logic
-}
-
-#[camunda_connector(name = "slack", operation = "notify")]
-pub async fn slack_notify(id: u64, params: SlackParams) -> Result<SlackResult, String> {
-    // Slack notification logic
+#[camunda_connector(name = "string_utils", operation = "process")]
+pub async fn process_string(id: u64, params: StringInput) -> Result<StringOutput, String> {
+    Ok(StringOutput {
+        length: params.text.len(),
+        uppercase: params.text.to_uppercase(),
+    })
 }
 ```
 
@@ -196,20 +195,16 @@ pub async fn slack_notify(id: u64, params: SlackParams) -> Result<SlackResult, S
 
 This library uses the following key dependencies:
 
-- [`syn`](https://crates.io/crates/syn) & [`quote`](https://crates.io/crates/quote) - Proc macro utilities
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- **proc-macro2, quote, syn**: For procedural macro implementation
+- **serde**: For JSON serialization/deserialization
+- **axum**: For HTTP server functionality
+- **tokio**: For async runtime
+- **inventory**: For compile-time connector registration
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[Add your license information here]
 
-## Changelog
+## Contributing
 
-### v0.1.0
-- Initial release
-- Basic connector macro functionality
-- HTTP server generation
-- Error handling support
+[Add contribution guidelines here]
