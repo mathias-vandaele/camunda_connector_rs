@@ -1,6 +1,5 @@
 [template]
 
 [placeholders]
-crate_name = { type = "string", prompt = "Project name?" }
 app_description = { type = "string", prompt = "Project description?", default = "My awesome connector" }
 license = { type = "string", prompt = "License (MIT/Apache-2.0/Unlicense)?", default = "MIT" }

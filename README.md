@@ -24,6 +24,12 @@ tokio = {  version = "1.47.1" , features = ["full"]}
 serde_json = "1.0.142"
 ```
 
+or use `cargo-generate`
+
+```shell
+cargo generate https://github.com/mathias-vandaele/camunda_connector_rs.git --subfolder template
+```
+
 ### Basic Example
 
 ```rust
